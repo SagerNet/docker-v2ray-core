@@ -1,0 +1,57 @@
+name: Container CI
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+      - name: Check existing images
+        id: check
+        env:
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+        run: |
+          VERSION=$(curl -sSL "https://api.github.com/repos/SagerNet/v2ray-core/releases/latest" | jq -r .tag_name)
+          skopeo login "$DOCKER_REGISTRY" \
+            --username "$DOCKER_USERNAME" \
+            --password "$DOCKER_PASSWORD"
+          if [ "$(skopeo inspect "docker://$DOCKER_REGISTRY/$DOCKER_USERNAME/$DOCKER_IMAGE" | jq -r ".RepoTags as \$t | \"$VERSION\" | IN(\$t[])")" != 'true' ]; then
+            echo ::set-output name=version::$VERSION
+          else
+            sudo shutdown -P 0
+          fi
+      - name: Setup Docker BuildKit
+        run: |
+          sudo docker buildx create --platform linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64 --use
+          sudo docker run --privileged --rm tonistiigi/binfmt --install linux/386,linux/arm/v6,linux/arm/v7,linux/arm64
+      - name: Setup container registry credentials
+        env:
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          sudo docker login "$DOCKER_REGISTRY" \
+            --username "$DOCKER_USERNAME" \
+            --password "$DOCKER_PASSWORD"
+      - name: Build and push container images
+        env:
+          DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_IMAGE: ${{ secrets.DOCKER_IMAGE }}
+        run: |
+          sudo docker buildx build --build-arg VERSION=${{ steps.check.outputs.version }} \
+            --platform linux/386,linux/amd64,linux/arm/v6,linux/arm/v7,linux/arm64 --push \
+            --label org.opencontainers.image.created="$(date --rfc-3339 seconds --utc)" \
+            --label org.opencontainers.image.version="${{ steps.check.outputs.version }}" \
+            --label org.opencontainers.image.revision=${{ github.sha }} \
+            --tag "$DOCKER_REGISTRY/$DOCKER_USERNAME/$DOCKER_IMAGE:latest" \
+            --tag "$DOCKER_REGISTRY/$DOCKER_USERNAME/$DOCKER_IMAGE:${{ steps.check.outputs.version }}" .
+
